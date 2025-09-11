@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 Transaction Dispatcher Backend
 
@@ -112,3 +113,6 @@ Use compatible versions of Java, Spring Boot, and dependencies as defined in pom
 
 
 
+=======
+# TransactionDispatcher
+>>>>>>> 1a89461c3cb932f2beac34d6ab2c98fefd39753f

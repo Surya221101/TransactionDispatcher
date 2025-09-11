@@ -1,68 +1,68 @@
 package com.example.transactiondispatcher.service;
-
 import com.example.transactiondispatcher.entity.Acquirer;
 import com.example.transactiondispatcher.entity.Transaction;
 import com.example.transactiondispatcher.repository.AcquirerRepository;
 import com.example.transactiondispatcher.repository.TransactionRepository;
-import org.springframework.beans.factory.annotation.Autowired;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-
 import java.math.BigDecimal;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
+@RequiredArgsConstructor
 public class TransactionService {
 
-    @Autowired
-    private AcquirerRepository acquirerRepository;
+    private final AcquirerRepository acquirerRepository;
+    private final TransactionRepository transactionRepository;
 
-    @Autowired
-    private TransactionRepository transactionRepository;
 
-    public Transaction createTransaction(Integer userId, BigDecimal amount) {
+    private List<Acquirer> weightedAcquirers = new ArrayList<>();
+    private final AtomicInteger pointer = new AtomicInteger(0);
+
+
+    private synchronized void loadWeightedAcquirers() {
         List<Acquirer> acquirers = acquirerRepository.findAll();
-
-        List<TransactionRepository.AcquirerTransactionCount> counts = transactionRepository.countTransactionsByAcquirer();
-
-        long totalTx = counts.stream().mapToLong(TransactionRepository.AcquirerTransactionCount::getCount).sum();
-
-        Map<Integer, Long> acquirerTxCountMap = counts.stream()
-                .collect(Collectors.toMap(TransactionRepository.AcquirerTransactionCount::getAcquirerId, TransactionRepository.AcquirerTransactionCount::getCount));
-
-        Acquirer selectedAcquirer = null;
-        double maxGap = -Double.MAX_VALUE;
-
+        weightedAcquirers.clear();
         for (Acquirer acquirer : acquirers) {
-            long actualCount = acquirerTxCountMap.getOrDefault(acquirer.getId(), 0L);
-            double expectedCount = totalTx * (acquirer.getPercentShare() / 100.0);
-            double gap = expectedCount - actualCount;
-
-            if (gap > maxGap) {
-                maxGap = gap;
-                selectedAcquirer = acquirer;
+            int weight = acquirer.getPercentShare(); // percent as weight units
+            for (int i = 0; i < weight; i++) {
+                weightedAcquirers.add(acquirer);
             }
         }
+    }
 
-        if (selectedAcquirer == null) {
-            selectedAcquirer = acquirers.get(0);
+
+    public synchronized Transaction createTransaction(Integer userId, BigDecimal amount) {
+        if (weightedAcquirers.isEmpty()) {
+            loadWeightedAcquirers();
         }
+        int idx = pointer.getAndUpdate(i -> (i + 1) % weightedAcquirers.size());
+        Acquirer selectedAcquirer = weightedAcquirers.get(idx);
 
-        Transaction transaction = new Transaction();
-        transaction.setUserId(userId);
-        transaction.setAmount(amount);
-        transaction.setAcquirer(selectedAcquirer);
-        transaction.setStatus("SUCCESS");
+        Transaction transaction = Transaction.builder()
+                .userId(userId)
+                .amount(amount)
+                .acquirer(selectedAcquirer)
+                .status("SUCCESS")
+                .build();
 
         return transactionRepository.save(transaction);
     }
 
+
+    public synchronized void refreshWeightedAcquirers() {
+        pointer.set(0);
+        loadWeightedAcquirers();
+    }
+
+
     public Map<String, List<Transaction>> getTransactionsGroupedByAcquirer() {
         List<Acquirer> acquirers = acquirerRepository.findAll();
         Map<String, List<Transaction>> grouped = new HashMap<>();
-
-        for (Acquirer a : acquirers) {
-            grouped.put(a.getName(), transactionRepository.findByAcquirer(a));
+        for (Acquirer acquirer : acquirers) {
+            List<Transaction> txs = transactionRepository.findByAcquirer(acquirer);
+            grouped.put(acquirer.getName(), txs);
         }
         return grouped;
     }
